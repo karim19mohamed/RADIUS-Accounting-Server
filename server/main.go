@@ -172,3 +172,19 @@ func handlePacket(conn net.PacketConn, addr net.Addr, raw []byte, cfg Config) {
 	log.Printf("Accounting response sent to %s", addr.String())
 	fmt.Fprintf(os.Stdout, "Received accounting request from %s\n", addr.String())
 }
+
+// saveToRedis stores a JSON value under key with ttl, retrying on transient errors.
+func saveToRedis(ctx context.Context, rdb *redis.Client, key string, value []byte, ttl time.Duration) error {
+	if rdb == nil {
+		return fmt.Errorf("redis client is nil")
+	}
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		lastErr = rdb.Set(ctx, key, value, ttl).Err()
+		if lastErr == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(100*(1<<i)) * time.Millisecond)
+	}
+	return lastErr
+}
