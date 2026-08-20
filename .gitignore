@@ -1,0 +1,11 @@
+# Go build output
+bin/
+*.exe
+*.out
+
+# Local editor files
+.vscode/
+.DS_Store
+
+# Redis/logs
+*.log
