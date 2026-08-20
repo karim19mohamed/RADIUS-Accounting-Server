@@ -1,16 +1,18 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"time"
 
-	"encoding/json"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2866"
+	redis "github.com/go-redis/redis/v8"
 )
 
 const (
@@ -24,6 +26,7 @@ type Config struct {
 	RedisAddr   string
 	RedisDB     int
 	LogFilePath string
+	Rdb         *redis.Client
 }
 
 func getenv(key, fallback string) string {
@@ -44,6 +47,16 @@ func main() {
 
 	log.Printf("Starting RADIUS accounting server on %s", cfg.Addr)
 	log.Printf("Redis target: %s, DB %d", cfg.RedisAddr, cfg.RedisDB)
+
+	// Initialize Redis client and attach to config.
+	rdb := redis.NewClient(&redis.Options{
+		Addr: cfg.RedisAddr,
+		DB:   cfg.RedisDB,
+	})
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		log.Printf("warning: cannot reach Redis at %s: %v", cfg.RedisAddr, err)
+	}
+	cfg.Rdb = rdb
 
 	conn, err := net.ListenPacket("udp", cfg.Addr)
 	if err != nil {
@@ -113,10 +126,35 @@ func handlePacket(conn net.PacketConn, addr net.Addr, raw []byte, cfg Config) {
 		"packet_type":       "Accounting-Request",
 	}
 
-	// Log the JSON-encoded record for now (storage to Redis will be added
-	// in the next step).
-	j, _ := json.Marshal(record)
-	log.Printf("Accounting record: %s", string(j))
+	// Marshal the record to JSON for storage and logging.
+	j, err := json.Marshal(record)
+	if err != nil {
+		log.Printf("failed to marshal accounting record: %v", err)
+	} else {
+		log.Printf("Accounting record: %s", string(j))
+		// Store the JSON record in Redis with a 24-hour TTL. Use simple
+		// retry logic in case Redis is temporarily unavailable.
+		if cfg.Rdb != nil {
+			key := fmt.Sprintf("radius:acct:%s:%s:%d", record["username"], record["acct_session_id"], time.Now().UnixNano())
+			ctx := context.Background()
+			var setErr error
+			ttl := 24 * time.Hour
+			for i := 0; i < 3; i++ {
+				setErr = cfg.Rdb.Set(ctx, key, j, ttl).Err()
+				if setErr == nil {
+					break
+				}
+				time.Sleep(time.Duration(100*(1<<i)) * time.Millisecond)
+			}
+			if setErr != nil {
+				log.Printf("failed to write accounting record to Redis: %v", setErr)
+			} else {
+				log.Printf("stored accounting record in Redis key=%s", key)
+			}
+		} else {
+			log.Printf("no redis client configured; skipping storage")
+		}
+	}
 
 	// Build and send an Accounting-Response that mirrors the request
 	// identifier/authenticator so the sender can match the response.
