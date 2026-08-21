@@ -86,6 +86,31 @@ The codebase includes an integration-like test for `server` using `miniredis`.
 - `LOG_FILE` — path for subscriber to append logs (Docker container mounts `/var/log` to `./logs`).
 - `RADIUS_PORT` — (not yet wired) suggested future env to change bind port.
 
+**Architecture Diagram**
+
+```mermaid
+flowchart LR
+	Client[RADIUS Client] -->|UDP 1813 Accounting-Request| Server[Radius Server]
+	Server -->|SET radius:acct:*| Redis[(Redis)]
+	Server -->|UDP Accounting-Response| Client
+	Redis -->|Keyspace events| Subscriber[Subscriber Service]
+	Subscriber -->|Startup SCAN radius:acct:*| Redis
+	Subscriber -->|Append log lines| Log[/var/log/radius_updates.log/]
+	subgraph Compose
+		Server
+		Redis
+		Subscriber
+	end
+```
+
+Flow summary:
+- `RADIUS Client` sends an `Accounting-Request` to the `Radius Server` on UDP port 1813.
+- The `Radius Server` stores a JSON accounting record in Redis under `radius:acct:...` and replies with an `Accounting-Response`.
+- Redis is configured to emit keyspace notifications (`notify-keyspace-events`), which the `Subscriber` listens for (PSUBSCRIBE).
+- The `Subscriber` also performs a non-destructive `SCAN` at startup to log any existing `radius:acct:*` keys, and appends timestamped lines to the persistent logfile mounted at `/var/log/radius_updates.log`.
+
+This diagram maps to the `docker-compose.yml` services: `server`, `redis`, and `subscriber` running inside the Compose network; the host can run a RADIUS client (e.g. `send.go` or `radclient`) to exercise the flow.
+
 **Troubleshooting**
 - Port 6379 in use: if a host Redis is running, it will block the compose `redis` port. Either stop the host service:
 
