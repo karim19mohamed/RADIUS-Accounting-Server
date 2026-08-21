@@ -1,0 +1,37 @@
+version: '3.8'
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    environment:
+      - RADIUS_SECRET=${RADIUS_SECRET:-testing123}
+      - REDIS_ADDR=redis:6379
+    depends_on:
+      - redis
+    ports:
+      - "1813:1813/udp"
+
+  subscriber:
+    build:
+      context: .
+      dockerfile: subscriber/Dockerfile
+    environment:
+      - REDIS_ADDR=redis:6379
+      - LOG_FILE=/var/log/radius_updates.log
+    depends_on:
+      - redis
+    volumes:
+      - ./logs:/var/log
+
+volumes:
+  redis-data:
